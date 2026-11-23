@@ -43,6 +43,8 @@ String CommandHandler::handle(const String &line) {
   if (cmd == "deauth") return doDeauth(req);
   if (cmd == "deauth_loop_start") return doDeauthLoopStart(req);
   if (cmd == "deauth_loop_stop") return doDeauthLoopStop();
+  if (cmd == "csa_start") return doCsaStart(req);
+  if (cmd == "csa_stop") return doCsaStop();
   return errorJson("unknown_cmd");
 }
 
@@ -132,6 +134,13 @@ String CommandHandler::doStatus() {
     loop["target"] = wifi_.deauthLoopTargetString();
     loop["interval_ms"] = wifi_.deauthLoopInterval();
     loop["sent"] = wifi_.deauthLoopSent();
+  }
+
+  if (wifi_.csaActive()) {
+    JsonObject csa = doc["csa"].to<JsonObject>();
+    csa["new_channel"] = wifi_.csaNewChannel();
+    csa["interval_ms"] = wifi_.csaInterval();
+    csa["sent"] = wifi_.csaSent();
   }
 
   String out;
@@ -353,6 +362,47 @@ String CommandHandler::doDeauthLoopStop() {
   JsonObject loop = doc["deauth_loop"].to<JsonObject>();
   loop["active"] = false;
   loop["sent"] = sent;
+
+  String out;
+  serializeJson(doc, out);
+  return out;
+}
+
+String CommandHandler::doCsaStart(JsonVariantConst req) {
+  uint8_t newChannel = req["new_channel"] | 0;   // 0 = automatico (canal longe do atual)
+  uint32_t interval = req["interval"] | 100;     // ms entre cada rajada de beacons
+
+  bool ok = wifi_.startCsaAttack(newChannel, interval);
+
+  JsonDocument doc;
+  doc["ok"] = ok;
+  doc["state"] = wifi_.stateName();
+  if (ok) {
+    JsonObject csa = doc["csa"].to<JsonObject>();
+    csa["bssid"] = wifi_.lockedBssidString();
+    csa["ssid"] = wifi_.lockedSsid();
+    csa["current_channel"] = wifi_.lockedChannel();
+    csa["new_channel"] = wifi_.csaNewChannel();
+    csa["interval_ms"] = wifi_.csaInterval();
+  } else {
+    doc["error"] = "need_lock_first";
+  }
+
+  String out;
+  serializeJson(doc, out);
+  return out;
+}
+
+String CommandHandler::doCsaStop() {
+  uint32_t sent = wifi_.csaSent();
+  wifi_.stopCsaAttack();
+
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc["state"] = wifi_.stateName();
+  JsonObject csa = doc["csa"].to<JsonObject>();
+  csa["active"] = false;
+  csa["sent"] = sent;
 
   String out;
   serializeJson(doc, out);
