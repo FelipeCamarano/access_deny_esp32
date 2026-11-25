@@ -26,6 +26,8 @@
 //   {"cmd":"deauth","target":"AA:BB:CC:DD:EE:FF","reason":1,"type":"disassoc"}
 //   {"cmd":"deauth_loop_start","target":"AA:BB:CC:DD:EE:FF","interval":200}  (reenvia a cada 200ms ate parar)
 //   {"cmd":"deauth_loop_stop"}                                       (para o loop)
+//   {"cmd":"csa_start","new_channel":1,"interval":100}              (beacon spoofado com Channel Switch; fura PMF/WPA3. new_channel 0 = automatico)
+//   {"cmd":"csa_stop"}                                              (para o CSA)
 class CommandHandler {
 public:
   explicit CommandHandler(WifiManager &wifi) : wifi_(wifi) {}
@@ -47,5 +49,7 @@ private:
   String doDeauth(JsonVariantConst req);
   String doDeauthLoopStart(JsonVariantConst req);
   String doDeauthLoopStop();
+  String doCsaStart(JsonVariantConst req);
+  String doCsaStop();
   WifiManager &wifi_;
 };

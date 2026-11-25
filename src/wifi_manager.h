@@ -60,7 +60,19 @@ public:
   uint32_t deauthLoopSent() const { return loopSentTotal_; }
   uint32_t deauthLoopInterval() const { return loopIntervalMs_; }
   String deauthLoopTargetString() const;
-  void tick();  // reenvio periodico do loop; chamar sempre no loop() principal
+
+  // Ataque CSA: manda beacons spoofados do AP alvo com um Channel Switch
+  // Announcement, empurrando os clientes pra outro canal. Beacon nao e protegido
+  // por PMF, entao isso derruba ate em WPA3. Precisa estar LOCKED (usa o BSSID,
+  // o SSID e o canal travados). newChannel = 0 escolhe um canal longe do atual.
+  bool startCsaAttack(uint8_t newChannel = 0, uint32_t intervalMs = 100);
+  void stopCsaAttack();
+  bool csaActive() const { return csaActive_; }
+  uint32_t csaSent() const { return csaSentTotal_; }
+  uint32_t csaInterval() const { return csaIntervalMs_; }
+  uint8_t csaNewChannel() const { return csaNewChannel_; }
+
+  void tick();  // reenvio periodico do loop/CSA; chamar sempre no loop() principal
 
   WifiState state() const { return state_; }
   String stateName() const;
@@ -81,4 +93,11 @@ private:
   uint32_t loopIntervalMs_ = 200;
   uint32_t lastLoopSend_ = 0;
   uint32_t loopSentTotal_ = 0;
+
+  // Ataque CSA (beacon spoofado com Channel Switch Announcement)
+  bool csaActive_ = false;
+  uint8_t csaNewChannel_ = 0;
+  uint32_t csaIntervalMs_ = 100;
+  uint32_t lastCsaSend_ = 0;
+  uint32_t csaSentTotal_ = 0;
 };
