@@ -1,6 +1,6 @@
 # ACCESS DENY — ESP32
 
-Firmware em PlatformIO/Arduino pra um ESP32 que escaneia redes WiFi, deixa escolher/conectar numa rede por comando (Serial hoje, BLE depois — app em Flutter), e estuda ataques de deauth 802.11 num roteador de teste próprio.
+Firmware em PlatformIO/Arduino pra um ESP32 que escaneia redes WiFi, deixa escolher/conectar numa rede por comando (Serial hoje, BLE depois, app em Flutter), e estuda ataques de camada de enlace 802.11 (deauth e CSA) numa rede de teste própria.
 
 ## Estrutura (`src/`)
 
@@ -14,6 +14,8 @@ Firmware em PlatformIO/Arduino pra um ESP32 que escaneia redes WiFi, deixa escol
 | `wifi_manager.*` | orquestrador do rádio: scan, connect, lock de canal, sniff, deauth |
 | `packet_sniffer.*` | modo promíscuo, filtra Association Request pelo BSSID alvo |
 | `deauth_frame_builder.*` | monta os 26 bytes do frame de deauth 802.11 |
+| `csa_beacon_builder.*` | monta o beacon falso com o Channel Switch Announcement (ataque CSA) |
+| `sanity_check_override.*` | substitui a checagem fechada da SDK pra liberar o envio de frame cru |
 
 ## Arquitetura
 
@@ -309,6 +311,45 @@ Toda resposta hierarquiza por assunto: `network` (quem está conectado), `target
   "state": "sniffing",
   "deauth": {"target": "AA:BB:CC:DD:EE:FF", "reason": 1, "bssid": "AA:BB:CC:11:22:33"}
 }
+```
+Aceita também `"type":"disassoc"` e `"count":N` (rajada curta de N frames, máx 100).
+
+### `deauth_loop_start` / `deauth_loop_stop` — mantém o alvo fora reenviando deauth em intervalo fixo
+Um deauth solto o cliente reconecta na hora, então o loop reenvia alguns frames a cada `interval` ms até você parar.
+```json
+{"cmd":"deauth_loop_start","target":"AA:BB:CC:DD:EE:FF","interval":200}
+```
+```json
+{
+  "ok": true,
+  "state": "locked",
+  "deauth_loop": {"target": "AA:BB:CC:DD:EE:FF", "reason": 1, "type": "deauth", "interval_ms": 200, "bssid": "AA:BB:CC:11:22:33"}
+}
+```
+```json
+{"cmd":"deauth_loop_stop"}
+```
+```json
+{"ok": true, "state": "locked", "deauth_loop": {"active": false, "sent": 480}}
+```
+
+### `csa_start` / `csa_stop` — ataque por Channel Switch Announcement, passa onde o deauth esbarra no PMF
+Manda um beacon falso do AP alvo com um aviso de troca de canal, empurrando os clientes pra um canal morto. Como o beacon não é protegido pelo PMF, funciona até em WPA3. `new_channel` é opcional (`0` escolhe um canal longe do atual).
+```json
+{"cmd":"csa_start","new_channel":1,"interval":100}
+```
+```json
+{
+  "ok": true,
+  "state": "locked",
+  "csa": {"bssid": "AA:BB:CC:11:22:33", "ssid": "TP-LINK-TESTE", "current_channel": 6, "new_channel": 1, "interval_ms": 100}
+}
+```
+```json
+{"cmd":"csa_stop"}
+```
+```json
+{"ok": true, "state": "locked", "csa": {"active": false, "sent": 1240}}
 ```
 
 ## Build e gravação
