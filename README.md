@@ -2,6 +2,14 @@
 
 Firmware em PlatformIO/Arduino pra um ESP32 que escaneia redes WiFi, deixa escolher/conectar numa rede por comando (Serial hoje, BLE depois, app em Flutter), e estuda ataques de camada de enlace 802.11 (deauth e CSA) numa rede de teste própria.
 
+## Integrantes
+
+- Felipe Camarano Ribeiro Bomfim
+- Henrique de Oliveira Ferreira Lima
+- João Pedro Almeida da Silva Santos
+- Nicoly Lima Cardoso
+- Rafael do Nascimento Maia
+
 ## Estrutura (`src/`)
 
 | Arquivo | Responsabilidade |
